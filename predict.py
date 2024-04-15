@@ -68,7 +68,7 @@ def get_render_cameras(batch_size=1, M=120, radius=2.5, elevation=10.0, is_flexi
         cameras = cameras.unsqueeze(0).repeat(batch_size, 1, 1)
     return cameras
 
-def make_mesh(mesh_fpath, planes, model):
+def make_mesh(mesh_fpath, planes, model, infer_config):
     mesh_basename = os.path.basename(mesh_fpath).split('.')[0]
     mesh_dirname = os.path.dirname(mesh_fpath)
     mesh_vis_fpath = os.path.join(mesh_dirname, f"{mesh_basename}.glb")
@@ -82,7 +82,7 @@ def make_mesh(mesh_fpath, planes, model):
         print(f"Mesh saved to {mesh_fpath}")
     return mesh_fpath
 
-def make3d(images, model, device, IS_FLEXICUBES):
+def make3d(images, model, device, IS_FLEXICUBES, infer_config):
     images = np.asarray(images, dtype=np.float32) / 255.0
     images = torch.from_numpy(images).permute(2, 0, 1).contiguous().float()     # (3, 960, 640)
     images = rearrange(images, 'c (n h) (m w) -> (n m) c h w', n=3, m=2)        # (6, 3, 320, 320)
@@ -110,7 +110,7 @@ def make3d(images, model, device, IS_FLEXICUBES):
         frames = torch.cat(frames, dim=1)
         images_to_video(frames[0], video_fpath, fps=30,)
         print(f"Video saved to {video_fpath}")
-    mesh_fpath = make_mesh(mesh_fpath, planes, model)
+    mesh_fpath = make_mesh(mesh_fpath, planes, model, infer_config)
     return video_fpath, mesh_fpath
 
 class Predictor(BasePredictor):
@@ -123,12 +123,12 @@ class Predictor(BasePredictor):
         self.device = torch.device('cuda')
         self.pipeline = self.pipeline.to(self.device)
         seed_everything(0)
-        config_path = 'configs/instant-mesh-base.yaml'
+        config_path = 'configs/instant-mesh-large.yaml'
         config = OmegaConf.load(config_path)
         config_name = os.path.basename(config_path).replace('.yaml', '')
         model_config = config.model_config
-        infer_config = config.infer_config
-        model_ckpt_path = hf_hub_download(repo_id="TencentARC/InstantMesh", filename="instant_mesh_base.ckpt", repo_type="model")
+        self.infer_config = config.infer_config
+        model_ckpt_path = hf_hub_download(repo_id="TencentARC/InstantMesh", filename="instant_mesh_large.ckpt", repo_type="model")
         self.model = instantiate_from_config(model_config)
         state_dict = torch.load(model_ckpt_path, map_location='cpu')['state_dict']
         state_dict = {k[14:]: v for k, v in state_dict.items() if k.startswith('lrm_generator.') and 'source_camera' not in k}
@@ -150,5 +150,5 @@ class Predictor(BasePredictor):
         mv_images, mv_show_images = generate_mvs(processed_image, sample_steps, seed, self.pipeline, self.device)
         mv_images.save('/content/InstantMesh/mv_images.png')
         mv_show_images.save('/content/InstantMesh/mv_show_images.png')
-        output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES)
+        output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config)
         return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj)]
