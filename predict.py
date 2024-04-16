@@ -20,7 +20,7 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 from src.utils.train_util import instantiate_from_config
 from src.utils.camera_util import (FOV_to_intrinsics, get_zero123plus_input_cameras,get_circular_camera_poses,)
-from src.utils.mesh_util import save_obj
+from src.utils.mesh_util import save_obj, save_obj_with_mtl
 
 def preprocess(input_image, do_remove_background):
     rembg_session = rembg.new_session() if do_remove_background else None
@@ -68,21 +68,33 @@ def get_render_cameras(batch_size=1, M=120, radius=2.5, elevation=10.0, is_flexi
         cameras = cameras.unsqueeze(0).repeat(batch_size, 1, 1)
     return cameras
 
-def make_mesh(mesh_fpath, planes, model, infer_config):
+def make_mesh(mesh_fpath, planes, model, infer_config, export_texmap):
     mesh_basename = os.path.basename(mesh_fpath).split('.')[0]
     mesh_dirname = os.path.dirname(mesh_fpath)
     mesh_vis_fpath = os.path.join(mesh_dirname, f"{mesh_basename}.glb")
     with torch.no_grad():
-        mesh_out = model.extract_mesh(planes, use_texture_map=False, **infer_config,)
-        vertices, faces, vertex_colors = mesh_out
-        vertices = vertices[:, [1, 2, 0]]
-        vertices[:, -1] *= -1
-        faces = faces[:, [2, 1, 0]]
-        save_obj(vertices, faces, vertex_colors, mesh_fpath)
-        print(f"Mesh saved to {mesh_fpath}")
+        mesh_out = model.extract_mesh(planes, use_texture_map=export_texmap, **infer_config,)
+        if export_texmap:
+            vertices, faces, uvs, mesh_tex_idx, tex_map = mesh_out
+            save_obj_with_mtl(
+                vertices.data.cpu().numpy(),
+                uvs.data.cpu().numpy(),
+                faces.data.cpu().numpy(),
+                mesh_tex_idx.data.cpu().numpy(),
+                tex_map.permute(1, 2, 0).data.cpu().numpy(),
+                mesh_fpath,
+            )
+            print(f"Mesh with texmap saved to {mesh_fpath}")
+        else:
+            vertices, faces, vertex_colors = mesh_out
+            vertices = vertices[:, [1, 2, 0]]
+            vertices[:, -1] *= -1
+            faces = faces[:, [2, 1, 0]]
+            save_obj(vertices, faces, vertex_colors, mesh_fpath)
+            print(f"Mesh saved to {mesh_fpath}")
     return mesh_fpath
 
-def make3d(images, model, device, IS_FLEXICUBES, infer_config, export_video):
+def make3d(images, model, device, IS_FLEXICUBES, infer_config, export_video, export_texmap):
     images = np.asarray(images, dtype=np.float32) / 255.0
     images = torch.from_numpy(images).permute(2, 0, 1).contiguous().float()     # (3, 960, 640)
     images = rearrange(images, 'c (n h) (m w) -> (n m) c h w', n=3, m=2)        # (6, 3, 320, 320)
@@ -111,7 +123,7 @@ def make3d(images, model, device, IS_FLEXICUBES, infer_config, export_video):
         if export_video:
             images_to_video(frames[0], video_fpath, fps=30,)
             print(f"Video saved to {video_fpath}")
-    mesh_fpath = make_mesh(mesh_fpath, planes, model, infer_config)
+    mesh_fpath = make_mesh(mesh_fpath, planes, model, infer_config, export_texmap)
     if export_video:
         return video_fpath, mesh_fpath
     else:
@@ -147,6 +159,7 @@ class Predictor(BasePredictor):
         image_path: Path = Input(description="Input image"),
         remove_background: bool = True,
         export_video: bool = True,
+        export_texmap: bool = False,
         sample_steps: int = Input(default=75),
         seed: int = Input(default=42),
     ) -> List[Path]:
@@ -156,8 +169,16 @@ class Predictor(BasePredictor):
         mv_images.save('/content/InstantMesh/mv_images.png')
         mv_show_images.save('/content/InstantMesh/mv_show_images.png')
         if export_video:
-            output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video)
-            return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj)]
+            output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video, export_texmap)
+            if export_texmap:
+                mesh_basename = os.path.splitext(output_model_obj)[0]
+                return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj), Path(mesh_basename+'.mtl'), Path(mesh_basename+'.png')]
+            else:
+                return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj)]
         else:
-            output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video)
-            return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_model_obj)]
+            output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video, export_texmap)
+            if export_texmap:
+                mesh_basename = os.path.splitext(output_model_obj)[0]
+                return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_model_obj), Path(mesh_basename+'.mtl'), Path(mesh_basename+'.png')]
+            else:
+                return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_model_obj)]
