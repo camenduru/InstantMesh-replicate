@@ -82,7 +82,7 @@ def make_mesh(mesh_fpath, planes, model, infer_config):
         print(f"Mesh saved to {mesh_fpath}")
     return mesh_fpath
 
-def make3d(images, model, device, IS_FLEXICUBES, infer_config):
+def make3d(images, model, device, IS_FLEXICUBES, infer_config, export_video):
     images = np.asarray(images, dtype=np.float32) / 255.0
     images = torch.from_numpy(images).permute(2, 0, 1).contiguous().float()     # (3, 960, 640)
     images = rearrange(images, 'c (n h) (m w) -> (n m) c h w', n=3, m=2)        # (6, 3, 320, 320)
@@ -108,10 +108,14 @@ def make3d(images, model, device, IS_FLEXICUBES, infer_config):
                 frame = model.synthesizer(planes, cameras=render_cameras[:, i:i+chunk_size],render_size=render_size,)['images_rgb']
             frames.append(frame)
         frames = torch.cat(frames, dim=1)
-        images_to_video(frames[0], video_fpath, fps=30,)
-        print(f"Video saved to {video_fpath}")
+        if export_video:
+            images_to_video(frames[0], video_fpath, fps=30,)
+            print(f"Video saved to {video_fpath}")
     mesh_fpath = make_mesh(mesh_fpath, planes, model, infer_config)
-    return video_fpath, mesh_fpath
+    if export_video:
+        return video_fpath, mesh_fpath
+    else:
+        return mesh_fpath
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
@@ -142,6 +146,7 @@ class Predictor(BasePredictor):
         self,
         image_path: Path = Input(description="Input image"),
         remove_background: bool = True,
+        export_video: bool = True,
         sample_steps: int = Input(default=75),
         seed: int = Input(default=42),
     ) -> List[Path]:
@@ -150,5 +155,9 @@ class Predictor(BasePredictor):
         mv_images, mv_show_images = generate_mvs(processed_image, sample_steps, seed, self.pipeline, self.device)
         mv_images.save('/content/InstantMesh/mv_images.png')
         mv_show_images.save('/content/InstantMesh/mv_show_images.png')
-        output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config)
-        return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj)]
+        if export_video:
+            output_video, output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video)
+            return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_video), Path(output_model_obj)]
+        else:
+            output_model_obj = make3d(mv_images, self.model, self.device, self.IS_FLEXICUBES, self.infer_config, export_video)
+            return [Path('/content/InstantMesh/mv_show_images.png'), Path(output_model_obj)]
